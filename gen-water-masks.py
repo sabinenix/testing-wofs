@@ -112,16 +112,41 @@ def rename_bands(in_xr, des_bands, position):
     in_xr.name = des_bands[position]
     return in_xr
 
-def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='', s3_dir='common_sensing/fiji/wofsdefault/', inter_dir='test_masking/data/', aoi_mask=False, **kwargs):
+def load_img(bands_data, band_nms, satellite):
+    """
+    Assumes first band is ref
+
+    Note: for Sentinel-2, first band has 10m resolution which causes capacity issues when running, so switch to using 
+    bands_data[6] (20m resolution) as the reference band for resampling and reprojection. 
+    """
+    atts = bands_data[0].attrs
+    bands_data = [ rename_bands(band_data, band_nms, i) for i,band_data in enumerate(bands_data) ] # rename
+   
+    # Pick the reference band for reprojection and resampling 
+    if satellite == 'SENTINEL_2':
+        ref_band = bands_data[6]
+    elif satellite.startswith('LANDSAT_'):
+        ref_band = bands_data[0]
+
+    bands_data = [ bands_data[i].rio.reproject_match(ref_band) for i in range(len(band_nms)) ] # repro+resample+extent
+    bands_data = [ xr.align(bands_data[0], bands_data[i], join="override")[1] for i in range(len(band_nms)) ] # force align
+    bands_data = xr.merge(bands_data).rename({'band': 'time'}).isel(time = 0).drop(['time']) # ensure band names & dims consistent
+    bands_data = bands_data.assign_attrs(atts)
+    return bands_data
+
+def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='', s3_dir='common_sensing/fiji/wofsdefault/', inter_dir='test_masking/', aoi_mask=False, **kwargs):
     """
     Function to generate water masks for input data.
     """
     # Assume dirname of yml references name of the scene - should hold true for all ard-workflows prepared scenes
     scene_name = os.path.dirname(optical_yaml_path).split('/')[-1]
     
-    # Data to run the water mask on is stored in inter_dir for now (should pull from s3)
-    inter_dir = f"{inter_dir}{scene_name}_tmp/"
-    os.makedirs(inter_dir, exist_ok=True)
+    # Data to run the water mask on is stored in data_dir for now (should eventually pull from s3)
+    data_dir = f"{inter_dir}{scene_name}_tmp/"
+    os.makedirs(data_dir, exist_ok=True)
+
+    masked_dir = f"{inter_dir}{scene_name}_masked/"
+    os.makedirs(masked_dir, exist_ok=True)
     #cog_dir = f"{inter_dir}{scene_name}/"
     #os.makedirs(cog_dir, exist_ok=True)
 
@@ -180,20 +205,19 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='', s3_dir='com
         root.info(f"{scene_name} Loading & Reformatting bands")
 
         # data loading pre-requisite xarray format for applying mask + wofs classifier
-        o_bands_data = [ rxr.open_rasterio(inter_dir + yml_meta['image']['bands'][b]['path']) for b in des_bands ] # loading
+        o_bands_data = [ rxr.open_rasterio(data_dir + yml_meta['image']['bands'][b]['path']) for b in des_bands ] # loading
+        satellite = yml_meta['platform']['code'] # helper to generalise masking 
+        logging.info(f'Satellite: {satellite}')
         
-        # 7th band corresponds to pixel_qa band for landsat and scene_classification band for sentinel-2
-        pixel_qa_band = o_bands_data[6]
+        # Use the load_img function to resample, reproject, align and merge bands into single dataset
+        bands_data = load_img(o_bands_data, des_bands, satellite)
 
-        # TODO: Resample bands
-        #o_bands_data = [ resamp_bands(i, o_bands_data) for i in o_bands_data ]
+        # Select the band from which to generate masks
+        if satellite == 'SENTINEL_2':
+            pixel_qa_band = bands_data.scene_classification
+        elif satellite.startswith('LANDSAT_'):
+            pixel_qa_band = bands_data.pixel_qa
 
-        # rescale bands using scale_and_clip_dataarray function, only not for the last item in the list
-        #logging.info(f"{scene_name} Rescaling bands to old collection 1 style")
-        #o_bands_data = [ scale_and_clip_dataarray(i, scale_factor=0.275, add_offset=-2000,clip_range=None, valid_range=(0, 10000))  for i in o_bands_data[:-1] ] + [o_bands_data[-1]]
-
-        #bands_data = xr.merge([rename_bands(bd, des_bands, i) for i,bd in enumerate(o_bands_data)]).rename({'band': 'time'}) # ensure band names & dims consistent
-        #bands_data = bands_data.assign_attrs(o_bands_data[0].attrs) # crs etc. needed later
         for i in o_bands_data: i.close()
         #o_bands_data = None
         #bands_data['time'] = [datetime.strptime(yml_meta['extent']['center_dt'], '%Y-%m-%d %H:%M:%S')] # time dim needed for wofs
@@ -209,14 +233,12 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='', s3_dir='com
         root.info(f"{scene_name} Applying masks")
 
         # Define the output paths for the water + combined (clear+water) masks
-        water_mask_opath = f"{scene_name}_water_mask.tif"
-        combined_mask_opath = f"{scene_name}_combined_mask.tif"
+        water_mask_opath = f"{masked_dir}/{scene_name}_water_mask.tif"
+        combined_mask_opath = f"{masked_dir}/{scene_name}_combined_mask.tif"
         
-        # Generate the water mask and write to raster
+        # Generate the water/clear masks and write to raster
         water_mask = qa_clean_mask(pixel_qa_band, satellite, cover_types=['water']) 
         water_mask.rio.to_raster(water_mask_opath, dtype="uint8")
-
-        # Generate the clear (cloud-free) mask
         clear_mask = qa_clean_mask(pixel_qa_band, satellite, cover_types=['clear']) 
 
         # Combine the clear and water masks (0: nodata/cloud; 1: clear land; 2: clear water)
@@ -225,13 +247,15 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='', s3_dir='com
 
         root.info(f"Got the masks for {satellite}")
 
-
         # Apply the clearsky mask
-        #logger.info(f"Starting to apply the clearsky mask for {satellite}")
-        #clearsky_scenes = bands_data.where(clearsky_masks) # !!!this consumes a lot of memory!!!
-        #logger.info(f"Applied the clearsky mask for {satellite}")
-#             if satellite == 'SENTINEL_2':
-#                 clearsky_scenes = clearsky_scenes.rename_vars({'swir_1': 'swir1', 'swir_2': 'swir2'})
+        root.info(f"Applying the cloud masks for {satellite}")
+        
+        # Loop through the bands of o_bands_data and apply the clearsky mask
+        for var in bands_data.data_vars:
+            masked = bands_data[var].where(clear_mask)
+            masked.rio.to_raster(f"{masked_dir}/{scene_name}_{var}_masked.tif")
+            logging.info(f"Wrote raster for {var}")
+    
     except:
         root.exception(f"{scene_name} Masks not applied")
         raise Exception('Data formatting error')
@@ -244,10 +268,10 @@ if __name__ == '__main__':
     root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
 
     # Landsat 8 
-    #optical_yaml_path = '/home/spatialdays/Documents/ARD_Data/ARD_Landsat/ScaleValues/Scaled/LC08_L2SR_076071_20200910_tmp/LC08_L2SR_076071_20200910/datacube-metadata.yaml'
+    optical_yaml_path = '/home/spatialdays/Documents/ARD_Data/ARD_Landsat/ScaleValues/Scaled/LC08_L2SR_076071_20200910_tmp/LC08_L2SR_076071_20200910/datacube-metadata.yaml'
     
     # Sentinel 2
-    optical_yaml_path = '/home/spatialdays/Documents/ARD_Data/ARD_Sentinel2/S2A_MSIL2A_20190124T221941_T60KYF_tmp/S2A_MSIL2A_20190124T221941_T60KYF_scaled/datacube-metadata.yaml'
+    #optical_yaml_path = '/home/spatialdays/Documents/ARD_Data/ARD_Sentinel2/S2A_MSIL2A_20190124T221941_T60KYF_tmp/S2A_MSIL2A_20190124T221941_T60KYF_scaled/datacube-metadata.yaml'
     
     gen_water_mask(optical_yaml_path)
 
