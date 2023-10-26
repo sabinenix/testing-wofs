@@ -56,7 +56,7 @@ def add_timestamp_data_to_xr(dataset):
                 'longitude': dataset.longitude,
                 'time': dataset.time})
 
-def perform_timeseries_analysis(dataset_in, band_name, intermediate_product=None, no_data=0, operation="mean"):
+def perform_timeseries_analysis(dataset_in, band_name, intermediate_product=None, no_data=-1, operation="mean"):
     """
     Description:
 
@@ -78,21 +78,22 @@ def perform_timeseries_analysis(dataset_in, band_name, intermediate_product=None
     data = data.where(data != no_data)
 
     processed_data_sum = data.sum('time')
-    logging.info(f'PROCESSED DATA SUM: {processed_data_sum}')
+    logging.info(f'PROCESSED DATA SUM: {processed_data_sum.min().values}')
 
     clean_data = data.notnull()
-
     clean_data_sum = clean_data.astype('bool').sum('time')
+    logging.info(f'CLEAN DATA SUM MAX: {clean_data_sum.max().values}')
 
     dataset_out = None
     if intermediate_product is None:
         processed_data_normalized = processed_data_sum / clean_data_sum
+        logging.info(f'PROCESSED DATA NORMALIZED {processed_data_normalized}')
         dataset_out = xr.Dataset(
             {
-                'normalized_data': processed_data_normalized,
+                'normalized_data': processed_data_normalized.astype('float32'),
                 'min': data.min(dim='time'),
                 'max': data.max(dim='time'),
-                'total_data': processed_data_sum,
+                'total_data': processed_data_sum.astype('int8'),
                 'total_clean': clean_data_sum.astype('int8')
             },
             coords={'latitude': dataset_in.x,
@@ -110,7 +111,7 @@ def perform_timeseries_analysis(dataset_in, band_name, intermediate_product=None
     return dataset_out
 
 
-def mask_summary(mask_dir='/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/*_masked/*_combined_mask.tif'):
+def mask_summary(mask_dir):
     """
     Combine 'WOFS'-like layers into a 'WOFS SUMMARY' -like layer
     """
@@ -136,6 +137,8 @@ def mask_summary(mask_dir='/home/spatialdays/Documents/testing-wofs/test_masking
         with open (yaml_path) as stream: yml_meta = yaml.safe_load(stream)
         timestamp = datetime.strptime(yml_meta['extent']['center_dt'], '%Y-%m-%d %H:%M:%S')
         mask = rxr.open_rasterio(mask)
+        logging.info(f'MASK: {mask}')
+
         mask['time'] = timestamp
         scenes.append(mask)     
         # Close the mask files
@@ -144,11 +147,13 @@ def mask_summary(mask_dir='/home/spatialdays/Documents/testing-wofs/test_masking
 
     # Match res/projection and force align so the scenes can be concatenated
     scenes = [ scenes[i].rio.reproject_match(scenes[0]) for i in range(len(scenes)) ] 
+    logging.info(f'SCENES: {scenes}')
     
     # Avoid coord differences due to floats (without this the code crashes bc of misaligned coords)
     scenes = [scenes[i].assign_coords({
     "x": scenes[0].x,
     "y": scenes[0].y,}) for i in range(len(scenes))]
+    logging.info(f'ASSIGNED: {scenes}')
     
     # Align the scenes so they can be concatenated later
     scenes = [ xr.align(scenes[0], scenes[i], join="override", fill_value=0)[1] for i in range(len(scenes)) ] 
@@ -158,21 +163,21 @@ def mask_summary(mask_dir='/home/spatialdays/Documents/testing-wofs/test_masking
     for i in scenes: i.close()
     logging.info(f'CONCATENATED: {mask_data}')
 
-
-
     # Run timeseries analysis 
-    out_data = perform_timeseries_analysis(mask_data, 'vals', intermediate_product=None, no_data=0, operation="mean")
+    out_data = perform_timeseries_analysis(mask_data, 'vals', intermediate_product=None, no_data=-1, operation="mean")
     logging.info(f'OUT DATA: {out_data}')
 
     # Write out_data to tif
-    out_data.normalized_data.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/NormalizedData.tif')
-    out_data.total_clean.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/TotalClean.tif')
-    out_data.total_data.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/TotalData.tif')
+    out_data.normalized_data.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/NormalizedData_QASUMMARY.tif')
+    out_data.total_clean.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/TotalClean_QASUMMARY.tif')
+    out_data.total_data.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/TotalData_QASUMMARY.tif')
 
 if __name__ == '__main__':  
     logging.basicConfig(level=logging.DEBUG)
     root = logging.getLogger()
     root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
+
+    mask_dir = '/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/*_masked/'
 
     mask_summary(mask_dir='/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/*_masked/*_combined_mask.tif')
 
