@@ -56,7 +56,7 @@ def add_timestamp_data_to_xr(dataset):
                 'longitude': dataset.longitude,
                 'time': dataset.time})
 
-def perform_timeseries_analysis(dataset_in, band_name, intermediate_product=None, no_data=-1, operation="mean"):
+def perform_timeseries_analysis(dataset_in, band_name, intermediate_product=None, no_data=-9999, operation="mean"):
     """
     Description:
 
@@ -73,7 +73,7 @@ def perform_timeseries_analysis(dataset_in, band_name, intermediate_product=None
     assert operation in ['mean', 'max', 'min'], "Please enter a valid operation."
 
     data = dataset_in
-    logging.info(f'Min of input data: {data.min().values}, Max: {data.max().values}')
+    #logging.info(f'Min of input data: {data.min().values}, Max: {data.max().values}')
     logging.info(f'Trying to apply nodata')
     data = data.where(data != no_data)
     logging.info(f'Applied nodata')
@@ -84,6 +84,7 @@ def perform_timeseries_analysis(dataset_in, band_name, intermediate_product=None
     logging.info(f'Min of processed data sum: {processed_data_sum.min().values}, Max: {processed_data_sum.max().values}')
 
     clean_data = data.notnull()
+    #clean_data = data.where(data != -1)
     clean_data_sum = clean_data.astype('bool').sum('time')
 
     dataset_out = None
@@ -95,20 +96,20 @@ def perform_timeseries_analysis(dataset_in, band_name, intermediate_product=None
                 'normalized_data': processed_data_normalized.astype('float32'),
                 'min': data.min(dim='time'),
                 'max': data.max(dim='time'),
-                'total_data': processed_data_sum.astype('int8'),
-                'total_clean': clean_data_sum.astype('int8')
+                'total_data': processed_data_sum.astype('int16'),
+                'total_clean': clean_data_sum.astype('int16')
             },
             coords={'latitude': dataset_in.x,
                     'longitude': dataset_in.y})
     else:
         dataset_out = intermediate_product
         dataset_out['total_data'] += processed_data_sum
-        dataset_out['total_clean'] += clean_data_sum.astype('int8')
+        dataset_out['total_clean'] += clean_data_sum.astype('int16')
         dataset_out['normalized_data'] = dataset_out['total_data'] / dataset_out['total_clean']
         dataset_out['min'] = xr.concat([dataset_out['min'], data.min(dim='time')], dim='time').min(dim='time')
         dataset_out['max'] = xr.concat([dataset_out['max'], data.max(dim='time')], dim='time').max(dim='time')
 
-    nan_to_num(dataset_out, -1)
+    nan_to_num(dataset_out, -9999)
 
     return dataset_out
 
@@ -122,6 +123,8 @@ def stack_masks(mask_dir):
     # Get list of water masks (one for each scene)
     mask_paths = glob.glob(mask_dir)
     logging.info(f'MASK PATHS: {mask_paths}')
+
+    #scenes = [ rxr.open_rasterio(mask) for mask in mask_paths ]
 
     scenes = []
 
@@ -140,14 +143,14 @@ def stack_masks(mask_dir):
         mask = rxr.open_rasterio(mask)
 
         mask['time'] = timestamp
-        logging.info(f'MASK: {mask}')
+        mask = mask.assign_attrs({'_FillValue': -9999})
         scenes.append(mask)     
         # Close the mask files
         mask.close()
 
     # Match res/projection and force align so the scenes can be concatenated
-    scenes = [ scenes[i].rio.reproject_match(scenes[0]) for i in range(len(scenes)) ] 
-    #logging.info(f'SCENES: {scenes}')
+    scenes = [ scenes[i].rio.reproject_match(scenes[0], fill_value=-9999) for i in range(len(scenes)) ] 
+    logging.info(f'SCENES: {scenes}')
     
     # Avoid coord differences due to floats (without this the code crashes bc of misaligned coords)
     scenes = [scenes[i].assign_coords({
@@ -156,17 +159,18 @@ def stack_masks(mask_dir):
     #logging.info(f'ASSIGNED: {scenes}')
     
     # Align the scenes so they can be concatenated later
-    scenes = [ xr.align(scenes[0], scenes[i], join="override", fill_value=-1)[1] for i in range(len(scenes)) ] 
+    scenes = [ xr.align(scenes[0], scenes[i], join="override", fill_value=-9999)[1] for i in range(len(scenes)) ] 
 
     # Concatenate xarrays into single dataset
-    mask_data = xr.concat(scenes, dim='time', fill_value=-1).rename({'band': 'vals'})
+    #mask_data = xr.concat(scenes, dim='time', fill_value=-1).rename({'band': 'vals'})
+    mask_data = xr.concat(scenes, dim='time', fill_value=-9999).rename({'band': 'vals'}).drop('vals')
     for i in scenes: i.close()
     
     return mask_data
 
 
 
-def mask_summary(mask_dir, summary_mask='combined'):
+def mask_summary(mask_dir, out_dir, summary_mask='combined'):
     """
     Combine 'WOFS'-like layers into a 'WOFS SUMMARY' -like layer
     """
@@ -177,6 +181,9 @@ def mask_summary(mask_dir, summary_mask='combined'):
         mask_dir = os.path.join(mask_dir, '*/*clear_mask.tif')
     elif summary_mask == 'combined':
         mask_dir = os.path.join(mask_dir, '*/*combined_mask.tif')
+    elif summary_mask == 'wofs':
+        mask_dir = os.path.join(mask_dir, '*/*wofl_mask.tif')
+
 
     # Stack the masks in mask_dir into single xarray dataset
     mask_data = stack_masks(mask_dir) 
@@ -184,13 +191,13 @@ def mask_summary(mask_dir, summary_mask='combined'):
     
     # Run timeseries analysis 
     logging.info(f'starting timeseries analysis')
-    out_data = perform_timeseries_analysis(mask_data, 'vals', intermediate_product=None, no_data=-1, operation="mean")
+    out_data = perform_timeseries_analysis(mask_data, 'vals', intermediate_product=None, no_data=-9999, operation="mean")
     logging.info(f'completed timeseries analysis: {out_data}')
 
     # Write out_data to tif
-    out_data.normalized_data.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/NormalizedData_QASUMMARY.tif')
-    out_data.total_clean.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/TotalClean_QASUMMARY.tif')
-    out_data.total_data.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/TotalData_QASUMMARY.tif')
+    out_data.normalized_data.rio.to_raster(f'{out_dir}NormalizedData_{summary_mask}.tif')
+    out_data.total_clean.rio.to_raster(f'{out_dir}TotalClean_{summary_mask}.tif')
+    out_data.total_data.rio.to_raster(f'{out_dir}TotalData_{summary_mask}.tif')
 
 if __name__ == '__main__':  
     logging.basicConfig(level=logging.DEBUG)
@@ -198,8 +205,9 @@ if __name__ == '__main__':
     root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
 
     mask_dir = '/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/Masks/'
+    out_dir = f'/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/Summaries/'
 
-    mask_summary(mask_dir, summary_mask='combined')
+    mask_summary(mask_dir, out_dir, summary_mask='wofs')
 
 
 

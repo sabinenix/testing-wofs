@@ -270,18 +270,20 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='', s3_dir='com
         # Generate the water mask
         water_mask = qa_clean_mask(pixel_qa_band, satellite, cover_types=['water']) 
         #water_mask['time'] = timestamp
-        water_mask.rio.to_raster(f"{masked_dir}/{scene_name}_water_mask.tif", dtype="int8", nodata=-1, driver='COG')
+        water_mask.rio.to_raster(f"{masked_dir}/{scene_name}_water_mask.tif", dtype="int16", driver='COG')
 
         # Generate the clear mask
         clear_mask = qa_clean_mask(pixel_qa_band, satellite, cover_types=['clear']) 
         #clear_mask['time'] = timestamp
-        clear_mask.rio.to_raster(f"{masked_dir}/{scene_name}_clear_mask.tif", dtype="int8", nodata=-1, driver='COG')
+        clear_mask.rio.to_raster(f"{masked_dir}/{scene_name}_clear_mask.tif", dtype="int16", driver='COG')
 
         # Combine the clear and water masks (nodata = -1, non-water = 0, water = 1)
-        combined_mask = (water_mask.astype(int) + clear_mask.astype(int)) - 1 
+        #combined_mask = (water_mask.astype(int) + clear_mask.astype(int)) - 1 
+        combined_mask = water_mask.where(clear_mask)
+        combined_mask = combined_mask.fillna(-9999)
         #combined_mask['time'] = timestamp
         logging.info(f'Min and Max of combined mask: {combined_mask.min()}, {combined_mask.max()}')
-        combined_mask.rio.to_raster(f"{masked_dir}/{scene_name}_combined_mask.tif", dtype="int8", nodata=-1, driver='COG')
+        combined_mask.rio.to_raster(f"{masked_dir}/{scene_name}_combined_mask.tif", nodata=-9999, dtype="int16", driver='COG')
 
         root.info(f"Got the masks for {satellite}")
     
@@ -294,9 +296,9 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='', s3_dir='com
     try: 
         root.info(f"{scene_name} Generating masks using WOFS algorithm")
         wofl = wofs_classify(bands_data, clean_mask=clear_mask, x_coord='x', y_coord='y',
-                  time_coord='time', no_data=-1)
+                  time_coord='time', no_data=-9999)
         logging.info(f'Min and Max of WOFL: {wofl.wofs.min()}, {wofl.wofs.max()}')
-        wofl.wofs.rio.to_raster(f"{masked_dir}/{scene_name}_wofl_mask.tif", dtype="int8", nodata=-1, driver='COG')
+        wofl.wofs.rio.to_raster(f"{masked_dir}/{scene_name}_wofl_mask.tif", nodata=-9999, dtype="int16", driver='COG')
         root.info(f"Got the WOFL masks for {satellite}")
     except:
         root.exception(f"{scene_name} WOFL masks not generated")
@@ -333,9 +335,11 @@ if __name__ == '__main__':
     # # Sentinel 2
     #optical_yaml_path = '/home/spatialdays/Documents/testing-wofs/test_masking/S2A_MSIL2A_20190124T221941_T60KYF_scaled_tmp/datacube-metadata.yaml'
     #gen_water_mask(optical_yaml_path, inter_dir='test_masking/')
+
+    # Sentinel 2: Run for all scenes in the directory
     
 
-    # # Code crashes when trying to run for each yaml in the directory
+    # Landsat 8: Run for all scenes in the directory
     yaml_paths = glob.glob('/home/spatialdays/Documents/ARD_Data/ARD_Landsat/Tile7572/*/datacube-metadata.yaml')
     for optical_yaml_path in yaml_paths:
         gen_water_mask(optical_yaml_path, inter_dir='test_masking/Tile7572/')
