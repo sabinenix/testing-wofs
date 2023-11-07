@@ -175,7 +175,13 @@ def load_img(bands_data, band_nms, satellite, timestamp):
 
 def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='', s3_dir='common_sensing/fiji/wofsdefault/', inter_dir='test_masking/', aoi_mask=False, apply_masks=False, **kwargs):
     """
-    Generate water or clearsky masks for a given scene. 
+    Generate (and if desired, apply) water and clear masks for a given scene. 
+    
+    Masks are generated using two methods: 1) Using the pixel_qa band (Landsat) and scene_classification band (Sentinel-2). 
+    The Landsat pixel_qa band is a bit band where each bit corresponds to some surface condition. The Sentinel-2 scene_classification
+    band has values corresponding to different surface conditions. 2) Using the WOFS algorithm. The WOFS algorithm works for both 
+    Landsat and Sentinel-2 values and classifies a scene into water/non-water based on a model trained on Landsat data in Australia 
+    (Mueller et al. 2015). If desired, the clearsky masks can be applied to the data to generate cloud-free data.
     """
 
     # Assume dirname of yml references name of the scene - should hold true for all ard-workflows prepared scenes
@@ -269,19 +275,15 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='', s3_dir='com
         
         # Generate the water mask
         water_mask = qa_clean_mask(pixel_qa_band, satellite, cover_types=['water']) 
-        #water_mask['time'] = timestamp
         water_mask.rio.to_raster(f"{masked_dir}/{scene_name}_water_mask.tif", dtype="int16", driver='COG')
 
         # Generate the clear mask
         clear_mask = qa_clean_mask(pixel_qa_band, satellite, cover_types=['clear']) 
-        #clear_mask['time'] = timestamp
         clear_mask.rio.to_raster(f"{masked_dir}/{scene_name}_clear_mask.tif", dtype="int16", driver='COG')
 
-        # Combine the clear and water masks (nodata = -1, non-water = 0, water = 1)
-        #combined_mask = (water_mask.astype(int) + clear_mask.astype(int)) - 1 
+        # Combine the clear and water masks (nodata = -9999, non-water = 0, water = 1)
         combined_mask = water_mask.where(clear_mask)
         combined_mask = combined_mask.fillna(-9999)
-        #combined_mask['time'] = timestamp
         logging.info(f'Min and Max of combined mask: {combined_mask.min()}, {combined_mask.max()}')
         combined_mask.rio.to_raster(f"{masked_dir}/{scene_name}_combined_mask.tif", nodata=-9999, dtype="int16", driver='COG')
 

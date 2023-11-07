@@ -17,7 +17,7 @@ import glob
 
 
 def wofs_classify(dataset_in, clean_mask=None, x_coord='longitude', y_coord='latitude',
-                  time_coord='time', no_data=0, mosaic=False, enforce_float64=False):
+                  time_coord='time', no_data=-1, mosaic=False, enforce_float64=False):
     """
     Description:
       Performs WOfS algorithm on given dataset.
@@ -260,273 +260,417 @@ def wofs_classify(dataset_in, clean_mask=None, x_coord='longitude', y_coord='lat
     #restore_or_convert_dtypes(None, band_list, dataset_in_dtypes, dataset_in, no_data)
     return dataset_out
 
-def rename_bands(in_xr, des_bands, position):
-    in_xr.name = des_bands[position]
-    return in_xr
+# def rename_bands(in_xr, des_bands, position):
+#     in_xr.name = des_bands[position]
+#     return in_xr
 
-def perform_timeseries_analysis(dataset_in, band_name, intermediate_product=None, no_data=0, operation="mean"):
-    """
-    Description:
+# def perform_timeseries_analysis(dataset_in, band_name, intermediate_product=None, no_data=-1, operation="mean"):
+#     """
+#     Description:
 
-    -----
-    Input:
-      dataset_in (xarray.DataSet) - dataset with one variable to perform timeseries on
-      band_name: name of the band to create stats for.
-      intermediate_product: result of this function for previous data, to be combined here
-    Output:
-      dataset_out (xarray.DataSet) - dataset containing
-        variables: normalized_data, total_data, total_clean
-    """
+#     -----
+#     Input:
+#       dataset_in (xarray.DataSet) - dataset with one variable to perform timeseries on
+#       band_name: name of the band to create stats for.
+#       intermediate_product: result of this function for previous data, to be combined here
+#     Output:
+#       dataset_out (xarray.DataSet) - dataset containing
+#         variables: normalized_data, total_data, total_clean
+#     """
 
-    assert operation in ['mean', 'max', 'min'], "Please enter a valid operation."
+#     assert operation in ['mean', 'max', 'min'], "Please enter a valid operation."
 
-    logging.info(f'starting timeseries analysis')
+#     logging.info(f'starting timeseries analysis')
 
-    data = dataset_in
-    data = data.where(data != no_data)
+#     data = dataset_in
+#     data = data.where(data != no_data)
 
-    processed_data_sum = data.sum('time')
-    logging.info(f'PROCESSED DATA SUM: {processed_data_sum}')
+#     processed_data_sum = data.sum('time')
+#     logging.info(f'PROCESSED DATA SUM: {processed_data_sum}')
 
-    clean_data = data.notnull()
+#     clean_data = data.notnull()
 
-    clean_data_sum = clean_data.astype('bool').sum('time')
+#     clean_data_sum = clean_data.astype('bool').sum('time')
 
-    dataset_out = None
-    if intermediate_product is None:
-        processed_data_normalized = processed_data_sum / clean_data_sum
-        dataset_out = xr.Dataset(
-            {
-                'normalized_data': processed_data_normalized,
-                'min': data.min(dim='time'),
-                'max': data.max(dim='time'),
-                'total_data': processed_data_sum,
-                'total_clean': clean_data_sum.astype('int8')
-            },
-            coords={'latitude': dataset_in.x,
-                    'longitude': dataset_in.y})
-    else:
-        dataset_out = intermediate_product
-        dataset_out['total_data'] += processed_data_sum
-        dataset_out['total_clean'] += clean_data_sum.astype('int8')
-        dataset_out['normalized_data'] = dataset_out['total_data'] / dataset_out['total_clean']
-        dataset_out['min'] = xr.concat([dataset_out['min'], data.min(dim='time')], dim='time').min(dim='time')
-        dataset_out['max'] = xr.concat([dataset_out['max'], data.max(dim='time')], dim='time').max(dim='time')
+#     dataset_out = None
+#     if intermediate_product is None:
+#         processed_data_normalized = processed_data_sum / clean_data_sum
+#         dataset_out = xr.Dataset(
+#             {
+#                 'normalized_data': processed_data_normalized,
+#                 'min': data.min(dim='time'),
+#                 'max': data.max(dim='time'),
+#                 'total_data': processed_data_sum,
+#                 'total_clean': clean_data_sum.astype('int8')
+#             },
+#             coords={'latitude': dataset_in.x,
+#                     'longitude': dataset_in.y})
+#     else:
+#         dataset_out = intermediate_product
+#         dataset_out['total_data'] += processed_data_sum
+#         dataset_out['total_clean'] += clean_data_sum.astype('int8')
+#         dataset_out['normalized_data'] = dataset_out['total_data'] / dataset_out['total_clean']
+#         dataset_out['min'] = xr.concat([dataset_out['min'], data.min(dim='time')], dim='time').min(dim='time')
+#         dataset_out['max'] = xr.concat([dataset_out['max'], data.max(dim='time')], dim='time').max(dim='time')
 
-    nan_to_num(dataset_out, 0)
+#     nan_to_num(dataset_out, 0)
 
-    return dataset_out
+#     return dataset_out
 
-def nan_to_num(data, number):
-    """
-    Converts all nan values in `data` to `number`.
+# def nan_to_num(data, number):
+#     """
+#     Converts all nan values in `data` to `number`.
 
-    Parameters
-    ----------
-    data: xarray.Dataset or xarray.DataArray
-    """
-    if isinstance(data, xr.Dataset):
-        for key in list(data.data_vars):
-            data[key].values[np.isnan(data[key].values)] = number
-    elif isinstance(data, xr.DataArray):
-        data.values[np.isnan(data.values)] = number
+#     Parameters
+#     ----------
+#     data: xarray.Dataset or xarray.DataArray
+#     """
+#     if isinstance(data, xr.Dataset):
+#         for key in list(data.data_vars):
+#             data[key].values[np.isnan(data[key].values)] = number
+#     elif isinstance(data, xr.DataArray):
+#         data.values[np.isnan(data.values)] = number
 
-def stack_bands(scene_dir):
-    # Get list of water masks (one for each scene)
-    band_paths = glob.glob(f'{scene_dir}*.tif')
-    logging.info(f'BAND PATHS: {band_paths}')
+# def stack_bands_landsat(scene_dir):
+#     # Get list of water masks (one for each scene)
+#     band_paths = glob.glob(f'{scene_dir}*.tif')
+#     logging.info(f'BAND PATHS: {band_paths}')
 
-    # Split the file name to figure out the product
-    bands = []
+#     # Split the file name to figure out the product
+#     bands = []
 
-    for band in band_paths:
-        file_name = band.split('/')[-1]
-        file_parts = file_name.split('_')
-        #logging.info(f'FILE PARTS: {file_parts}')
-        prod_name = f"{file_parts[-2]}_{file_parts[-1][:-4]}".lower()
+#     for band in band_paths:
+#         file_name = band.split('/')[-1]
+#         file_parts = file_name.split('_')
+#         #logging.info(f'FILE PARTS: {file_parts}')
+#         prod_name = f"{file_parts[-2]}_{file_parts[-1][:-4]}".lower()
 
-        #logging.info(f'BAND NAME: {prod_name}')
+#         #logging.info(f'BAND NAME: {prod_name}')
 
-        prod_map = {
-        "sr_b1": 'blue',
-        "sr_b2": 'green',
-        "sr_b3": 'red',
-        "sr_b4": 'nir',
-        "sr_b5": 'swir1',
-        "sr_b6": 'thermal',
-        "sr_b7": 'swir2',
-        "qa_radsat": 'radsat_qa',
-        "qa_pixel": 'pixel_qa',
-        "qa_aerosol": 'aerosol_qa'
-        }
+#         prod_map = {
+#         "sr_b1": 'blue',
+#         "sr_b2": 'green',
+#         "sr_b3": 'red',
+#         "sr_b4": 'nir',
+#         "sr_b5": 'swir1',
+#         "sr_b6": 'thermal',
+#         "sr_b7": 'swir2',
+#         "qa_radsat": 'radsat_qa',
+#         "qa_pixel": 'pixel_qa',
+#         "qa_aerosol": 'aerosol_qa'
+#         }
 
-        if prod_name.startswith('sr_b'):
-            # TODO: Don't hard code this 
-            yaml_path = f'{scene_dir}datacube-metadata.yaml'
+#         if prod_name.startswith('sr_b'):
+#             # TODO: Don't hard code this 
+#             yaml_path = f'{scene_dir}datacube-metadata.yaml'
 
-            # Get the timestamp from the yaml file 
-            with open (yaml_path) as stream: yml_meta = yaml.safe_load(stream)
-            timestamp = datetime.strptime(yml_meta['extent']['center_dt'], '%Y-%m-%d %H:%M:%S')
-            band = rxr.open_rasterio(band)
-            band.name = prod_map[prod_name]
+#             # Get the timestamp from the yaml file 
+#             with open (yaml_path) as stream: yml_meta = yaml.safe_load(stream)
+#             timestamp = datetime.strptime(yml_meta['extent']['center_dt'], '%Y-%m-%d %H:%M:%S')
+#             band = rxr.open_rasterio(band)
+#             band.name = prod_map[prod_name]
 
-            band['timee'] = timestamp
-            bands.append(band)     
-            # Close the mask files
-            band.close()
+#             band['timee'] = timestamp
+#             bands.append(band)     
+#             # Close the mask files
+#             band.close()
 
-    # Match res/projection and force align so the scenes can be concatenated
-    bands = [ bands[i].rio.reproject_match(bands[0]) for i in range(len(bands)) ] 
+#     # Match res/projection and force align so the scenes can be concatenated
+#     bands = [ bands[i].rio.reproject_match(bands[0]) for i in range(len(bands)) ] 
     
-    # Avoid coord differences due to floats (without this the code crashes bc of misaligned coords)
-    bands = [bands[i].assign_coords({
-    "x": bands[0].x,
-    "y": bands[0].y,}) for i in range(len(bands))]
+#     # Avoid coord differences due to floats (without this the code crashes bc of misaligned coords)
+#     bands = [bands[i].assign_coords({
+#     "x": bands[0].x,
+#     "y": bands[0].y,}) for i in range(len(bands))]
     
-    # Align the scenes so they can be concatenated later
-    bands = [ xr.align(bands[0], bands[i], join="override", fill_value=0)[1] for i in range(len(bands)) ] 
-    logging.info(f'ALIGNED: {bands}')
+#     # Align the scenes so they can be concatenated later
+#     bands = [ xr.align(bands[0], bands[i], join="override", fill_value=0)[1] for i in range(len(bands)) ] 
+#     logging.info(f'ALIGNED: {bands}')
 
-    # Concatenate xarrays into single dataset
-    #band_data = xr.concat(bands, dim='time', fill_value=0).rename({'band': 'vals'})
-    band_data = xr.merge(bands).rename({'x': 'longitude', 'y': 'latitude', 'band': 'time'}).drop('timee')
-    for i in bands: i.close()
-    logging.info(f'MERGED: {band_data}')
+#     # Concatenate xarrays into single dataset
+#     #band_data = xr.concat(bands, dim='time', fill_value=0).rename({'band': 'vals'})
+#     band_data = xr.merge(bands).rename({'x': 'longitude', 'y': 'latitude', 'band': 'time'}).drop('timee')
+#     for i in bands: i.close()
+#     logging.info(f'MERGED: {band_data}')
 
-    return band_data
+#     return band_data
 
 
+# def stack_bands_sentinel(scene_dir):
+#     # Get list of water masks (one for each scene)
+#     band_paths = glob.glob(f'{scene_dir}*.tif')
+#     logging.info(f'BAND PATHS: {band_paths}')
 
-def clear_mask_to_boolean(clear_mask):
-    # Read in the clear mask
-    clear_mask = rxr.open_rasterio(clear_mask)
+#     # Split the file name to figure out the product
+#     bands = []
 
-    # Convert clear_mask to boolean
-    clear_mask = clear_mask.astype('bool')
+#     for band in band_paths:
+#         file_name = band.split('/')[-1]
+#         file_parts = file_name.split('_')
+#         logging.info(f'FILE PARTS: {file_parts}')
+#         prod_name = f"{file_parts[-2]}_{file_parts[-1][:-4]}".lower()
 
-    return clear_mask
+#         logging.info(f'BAND NAME: {prod_name}')
 
-def wofs_summary(wofl_dir='/home/spatialdays/Documents/testing-wofs/WOFLs/*.tif'):
-    """
-    Combine 'WOFS'-like layers into a 'WOFS SUMMARY' -like layer
-    """
+#         prod_map = {
+#         "b02_10m": 'blue',
+#         "b01_60m": 'coastal_aerosol',
+#         "b03_10m": 'green',
+#         "b08_10m": 'nir',
+#         "b04_10m": 'red',
+#         "b11_20m": 'swir1',
+#         "b12_20m": 'swir2',
+#         "b05_20m": 'vegetation_red_edge_1',
+#         "b06_20m": 'vegetation_red_edge_2',
+#         "b07_20m": 'vegetation_red_edge_3',
+#         "b8a_20m": 'vegetation_red_edge_4',
+#         "b09_60m": 'water_vapour',
+#         "wvp_10m": 'wvp',
+#         "scl_20m": 'scene_classification'
+#         }
 
-    # Get list of water masks (one for each scene)
-    wofl_paths = glob.glob(wofl_dir)
-    logging.info(f'WOFL PATHS: {wofl_paths}')
+#         if prod_name.startswith('b'):
+#             # TODO: Don't hard code this 
+#             yaml_path = f'{scene_dir}datacube-metadata.yaml'
 
-    wofls = []
+#             # Get the timestamp from the yaml file 
+#             with open (yaml_path) as stream: yml_meta = yaml.safe_load(stream)
+#             timestamp = datetime.strptime(yml_meta['extent']['center_dt'], '%Y-%m-%d %H:%M:%S')
+#             band = rxr.open_rasterio(band)
+#             band.name = prod_map[prod_name]
 
-    for wofl in wofl_paths:
-        scene_name = (os.path.dirname(wofl).split('/')[-1]).split('_')[0:4]
-        scene_name = '_'.join(scene_name)
-
-        logging.info(f'SCENE NAME: {scene_name}')
-
-        # Set all pixels with values of 0 to nan so they are excluded from clean data sum
-        #mask.values[mask.values == 0] = np.nan
-
-        # TODO: Don't hard code this 
-        #yaml_path = f'/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/{scene_name}_tmp/datacube-metadata.yaml'
-
-        # Get the timestamp from the yaml file 
-        #with open (yaml_path) as stream: yml_meta = yaml.safe_load(stream)
-        #timestamp = datetime.strptime(yml_meta['extent']['center_dt'], '%Y-%m-%d %H:%M:%S')
-        wofl = rxr.open_rasterio(wofl)
-        logging.info(wofl)
-        #wofl['time'] = timestamp
-        wofls.append(wofl)     
-        # Close the mask files
-        wofl.close()
-
-    logging.info('OUT OF THE LOOP')
-
-    # Match res/projection and force align so the scenes can be concatenated
-    wofls = [ wofls[i].rio.reproject_match(wofls[0]) for i in range(len(wofls)) ] 
-    logging.info(f'REPROJECTED')
+#             band['timee'] = timestamp
+#             bands.append(band)     
+#             # Close the mask files
+#             band.close()
     
-    # Avoid coord differences due to floats (without this the code crashes bc of misaligned coords)
-    wofls = [wofls[i].assign_coords({
-    "x": wofls[0].x,
-    "y": wofls[0].y,}) for i in range(len(wofls))]
-
-    logging.info(f'ASSIGNED COORDS')
+#     logging.info(f'BANDS: {bands}')
+#     # Match res/projection and force align so the scenes can be concatenated
+#     bands = [ bands[i].rio.reproject_match(bands[6]) for i in range(len(bands)) ] 
     
-    # # Align the scenes so they can be concatenated later
-    wofls = [ xr.align(wofls[0], wofls[i], join="override", fill_value=0)[1] for i in range(len(wofls)) ] 
-    logging.info(f'ALIGNED')
+#     # Avoid coord differences due to floats (without this the code crashes bc of misaligned coords)
+#     bands = [bands[i].assign_coords({
+#     "x": bands[0].x,
+#     "y": bands[0].y,}) for i in range(len(bands))]
+    
+#     # Align the scenes so they can be concatenated later
+#     bands = [ xr.align(bands[0], bands[i], join="override", fill_value=0)[1] for i in range(len(bands)) ] 
+#     logging.info(f'ALIGNED: {bands}')
 
-    # Concatenate xarrays into single dataset
-    wofl_data = xr.concat(wofls, dim='time', fill_value=0).rename({'band': 'vals'})
-    for i in wofls: i.close()
-    logging.info(f'CONCATENATED: {wofl_data}')
+#     # Concatenate xarrays into single dataset
+#     #band_data = xr.concat(bands, dim='time', fill_value=0).rename({'band': 'vals'})
+#     band_data = xr.merge(bands).rename({'x': 'longitude', 'y': 'latitude', 'band': 'time'}).drop('timee')
+#     for i in bands: i.close()
+#     logging.info(f'MERGED: {band_data}')
 
-    # Run timeseries analysis 
-    out_data = perform_timeseries_analysis(wofl_data, 'vals', intermediate_product=None, no_data=0, operation="mean")
-    logging.info(f'OUT DATA: {out_data}')
-
-    # Write out_data to tif
-    out_data.normalized_data.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/WOFLs/NormalizedData_WOFSUMMARY.tif')
-    out_data.total_clean.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/WOFLs/TotalClean_WOFSUMMARY.tif')
-    out_data.total_data.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/WOFLs/TotalData_WOFSUMMARY.tif')
-
-
-if __name__ == '__main__':
-
-    logging.basicConfig(level=logging.DEBUG)
-    root = logging.getLogger()
-    root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
-
-    # # Directory of directories 
-    # big_dir = '/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/'
-    # scene_dirs = glob.glob(f'{big_dir}LC08_L2SR_075072_*_tmp/')
-
-    # scene_dir = f'{big_dir}LC08_L2SR_075072_20221011_tmp/'
-    # scene_data = stack_bands(scene_dir)
-    # logging.info(f'Finished stacking bands')
-
-    # scene_name = scene_dir.split('/')[-2]
-    # logging.info(f'SCENE NAME: {scene_name}')
-
-    # # Define clear mask path
-    # clear_mask = f'{big_dir}{scene_name}_masked/{scene_name}_clear_mask.tif'
-    # clear_mask = clear_mask_to_boolean(clear_mask)
-
-    # # Run wofs classification
-    # wofs_data = wofs_classify(scene_data, clean_mask=clear_mask).astype('uint8')
-    # logging.info(f'Finished wofs classification:')
-    # wofs_data.wofs.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/WOFLs/{scene_name}_WOFL.tif')
+#     return band_data
 
 
-    # Define folder that holds WOFLs
-    wofl_dir = f'/home/spatialdays/Documents/testing-wofs/WOFLs/*.tif'
+# def clear_mask_to_boolean(clear_mask):
+#     # Read in the clear mask
+#     clear_mask = rxr.open_rasterio(clear_mask)
 
-    # Run wofs summary
-    wofs_summary(wofl_dir=wofl_dir)
+#     # Convert clear_mask to boolean
+#     clear_mask = clear_mask.astype('bool')
+
+#     return clear_mask
+
+# def load_img(bands_data, band_nms, satellite):
+#     """
+#     (From genprepWater.py)
+
+#     Use one of the bands as a reference for reprojection and resampling (matching the resolution of
+#     the reference band), then align all bands before merging into a single xarray dataset. 
+
+#     Note the original function used the first band by default as the reference band for reprojecting 
+#     and resampling, which works for Landsat, but for Sentinel-2, the first band has a 10m resolution 
+#     which caused capacity issues when running, so switched to using bands_data[6] (20m resolution) as 
+#     the reference band. 
+
+#     Parameters:
+#     bands_data: list of xarray DataArrays for each band
+#     band_nms: list of strings of the band names
+#     satellite: string denoting the satellite (e.g. LANDSAT_8, SENTINEL_2)
+#     nodata: int denoting the nodata value to use for the bands (0 for Landsat Collection 2)
+#     """
+#     # Name the bands so they appear as named data variables in the xarray dataset
+#     bands_data = [ rename_bands(band_data, band_nms, i) for i,band_data in enumerate(bands_data) ] 
+   
+#     # Pick the reference band for reprojection and resampling 
+#     if satellite == 'SENTINEL_2':
+#         ref_band = bands_data[6]
+#         nodata = -9999
+#     elif satellite.startswith('LANDSAT_'):
+#         ref_band = bands_data[0]
+#         nodata = 0
+
+#     # Combine the bands into xarray dataset after matching them to the reference band and aligning
+#     attrs = ref_band.attrs
+#     bands_data = [ bands_data[i].rio.reproject_match(ref_band, nodata = nodata) for i in range(len(band_nms)) ] 
+#     bands_data = [ xr.align(bands_data[0], bands_data[i], join="override")[1] for i in range(len(band_nms)) ] 
+#     #bands_data = xr.merge(bands_data).rename({'band': 'time'}).isel(time = 0).drop(['time']) 
+#     bands_data = xr.merge(bands_data)
+    
+#     bands_data = bands_data.assign_attrs(attrs)
+#     logging.info(f'bands_data final: {bands_data}')
+
+#     return bands_data
+
+# def wofs_summary(wofl_dir='/home/spatialdays/Documents/testing-wofs/WOFLs/*.tif'):
+#     """
+#     Combine 'WOFS'-like layers into a 'WOFS SUMMARY' -like layer
+#     """
+
+#     # Get list of water masks (one for each scene)
+#     wofl_paths = glob.glob(wofl_dir)
+#     logging.info(f'WOFL PATHS: {wofl_paths}')
+
+#     wofls = []
+
+#     for wofl in wofl_paths:
+#         scene_name = (os.path.dirname(wofl).split('/')[-1]).split('_')[0:4]
+#         scene_name = '_'.join(scene_name)
+
+#         logging.info(f'SCENE NAME: {scene_name}')
+
+#         # Set all pixels with values of 0 to nan so they are excluded from clean data sum
+#         #mask.values[mask.values == 0] = np.nan
+
+#         # TODO: Don't hard code this 
+#         #yaml_path = f'/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/{scene_name}_tmp/datacube-metadata.yaml'
+
+#         # Get the timestamp from the yaml file 
+#         #with open (yaml_path) as stream: yml_meta = yaml.safe_load(stream)
+#         #timestamp = datetime.strptime(yml_meta['extent']['center_dt'], '%Y-%m-%d %H:%M:%S')
+#         wofl = rxr.open_rasterio(wofl)
+#         logging.info(wofl)
+#         #wofl['time'] = timestamp
+#         wofls.append(wofl)     
+#         # Close the mask files
+#         wofl.close()
+
+#     #logging.info('OUT OF THE LOOP')
+
+#     # Match res/projection and force align so the scenes can be concatenated
+#     wofls = [ wofls[i].rio.reproject_match(wofls[0]) for i in range(len(wofls)) ] 
+#     #logging.info(f'REPROJECTED')
+    
+#     # Avoid coord differences due to floats (without this the code crashes bc of misaligned coords)
+#     wofls = [wofls[i].assign_coords({
+#     "x": wofls[0].x,
+#     "y": wofls[0].y,}) for i in range(len(wofls))]
+
+#     #logging.info(f'ASSIGNED COORDS')
+    
+#     # # Align the scenes so they can be concatenated later
+#     wofls = [ xr.align(wofls[0], wofls[i], join="override", fill_value=0)[1] for i in range(len(wofls)) ] 
+#     logging.info(f'ALIGNED')
+
+#     # Concatenate xarrays into single dataset
+#     wofl_data = xr.concat(wofls, dim='time', fill_value=0).rename({'band': 'vals'})
+#     for i in wofls: i.close()
+#     logging.info(f'CONCATENATED: {wofl_data}')
+
+#     # Run timeseries analysis 
+#     out_data = perform_timeseries_analysis(wofl_data, 'vals', intermediate_product=None, no_data=-1, operation="mean")
+#     logging.info(f'OUT DATA: {out_data}')
+
+#     # Write out_data to tif
+#     out_data.normalized_data.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/WOFLs/NormalizedData_WOFSUMMARY.tif')
+#     out_data.total_clean.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/WOFLs/TotalClean_WOFSUMMARY.tif')
+#     out_data.total_data.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/WOFLs/TotalData_WOFSUMMARY.tif')
+
+
+# if __name__ == '__main__':
+
+#     logging.basicConfig(level=logging.DEBUG)
+#     root = logging.getLogger()
+#     root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
+
+#     # TESTING ON LANDSAT
+
+#     # Directory of directories 
+#     big_dir = '/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/'
+#     scene_dirs = glob.glob(f'{big_dir}LC08_L2SR_075072_*_tmp/')
+
+#     # Switch the scene directory to the one you want to run 
+#     scene_dir = f'{big_dir}LC08_L2SR_075072_20220925_tmp/'
+
+#     # Get list of water masks (one for each scene)
+#     band_paths = glob.glob(f'{scene_dir}*.tif')
+
+#     # Define the desired bands for each instrument
+#     des_band_refs = {
+#         "LANDSAT_8": ['blue','green','red','nir','swir1','swir2','pixel_qa'],
+#         "LANDSAT_7": ['blue','green','red','nir','swir1','swir2','pixel_qa'],
+#         "LANDSAT_5": ['blue','green','red','nir','swir1','swir2','pixel_qa'],
+#         "LANDSAT_4": ['blue','green','red','nir','swir1','swir2','pixel_qa'],
+#         "SENTINEL_2": ['blue','green','red','nir','swir1','swir2','scene_classification'],
+#         "SENTINEL_1": ['VV','VH','somethinglayover shadow']}
+    
+#     # #yml = optical_yaml_path
+
+#     # with open (yml) as stream: yml_meta = yaml.safe_load(stream)
+#     # satellite = yml_meta['platform']['code'] # helper to generalise masking 
+#     # root.info(f'Satellite: {satellite}')
+#     # des_bands = des_band_refs[satellite]
+
+#     # # Open each band and get the satellite information from the yaml file
+#     # o_bands_data = [ rxr.open_rasterio(data_dir + yml_meta['image']['bands'][b]['path']) for b in des_bands ] 
+#     # satellite = yml_meta['platform']['code'] 
+
+#     # # Apply the timestamp to each band in the image
+#     # timestamp = datetime.strptime(yml_meta['extent']['center_dt'], '%Y-%m-%d %H:%M:%S')
+#     # for i in o_bands_data: i['time'] = timestamp
+    
+#     # # Use the load_img function to resample, reproject, align and merge bands into single dataset
+#     # bands_data = load_img(o_bands_data, des_bands, satellite)
 
 
 
+#     scene_data = stack_bands_landsat(scene_dir)
+#     logging.info(f'Finished stacking bands')
+
+#     scene_name = scene_dir.split('/')[-2]
+#     logging.info(f'SCENE NAME: {scene_name}')
+
+#     # Define clear mask path
+#     clear_mask = f'{big_dir}/Masks/{scene_name}_masked/{scene_name}_clear_mask.tif'
+#     clear_mask = clear_mask_to_boolean(clear_mask)
+
+#     # Run wofs classification
+#     wofs_data = wofs_classify(scene_data, clean_mask=clear_mask).astype('uint8')
+#     logging.info(f'Finished wofs classification:')
+#     wofs_data.wofs.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/WOFLs/{scene_name}_WOFL.tif')
 
 
+#     # # Define folder that holds WOFLs
+#     # wofl_dir = f'/home/spatialdays/Documents/testing-wofs/WOFLs/*WOFL.tif'
 
+#     # # Run wofs summary
+#     # wofs_summary(wofl_dir=wofl_dir)
 
+#     # # TESTING ON SENTINEL
+#     # # Directory of directories 
+#     # big_dir = '/home/spatialdays/Documents/testing-wofs/test_masking/'
+#     # scene_dirs = glob.glob(f'{big_dir}S2A_MSIL2A_*_tmp/')
 
-    # Set the scene directory
-    #scene_dir = '/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/LC08_L2SR_075072_20220605_tmp/'
+#     # # Switch the scene directory to the one you want to run 
+#     # scene_dir = f'{big_dir}S2A_MSIL2A_20190124T221941_T60KYF_scaled_tmp/'
+#     # scene_data = stack_bands_sentinel(scene_dir)
+#     # logging.info(f'Finished stacking bands')
 
-    #scene_data = stack_bands(scene_dir)
-    #logging.info(f'Finished stacking bands')
+#     # scene_name = scene_dir.split('/')[-2]
+#     # logging.info(f'SCENE NAME: {scene_name}')
 
-    # Define clear mask path 
-    #clear_mask = '/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/LC08_L2SR_075072_20220605_tmp_masked/LC08_L2SR_075072_20220605_tmp_clear_mask.tif'
-    #clear_mask = clear_mask_to_boolean(clear_mask)
+#     # # Define clear mask path
+#     # clear_mask = f'{big_dir}{scene_name}_masked/{scene_name}_clear_mask.tif'
+#     # clear_mask = clear_mask_to_boolean(clear_mask)
 
-    # Run wofs classification
-    #wofs_data = wofs_classify(scene_data, clean_mask=clear_mask)
-
-    #logging.info(f'Finished wofs classification: {wofs_data}')
-
-    #wofs_data.wofs.rio.to_raster('WOFS_OUTPUT.tif')
+#     # # Run wofs classification
+#     # wofs_data = wofs_classify(scene_data, clean_mask=clear_mask).astype('uint8')
+#     # logging.info(f'Finished wofs classification:')
+#     # wofs_data.wofs.rio.to_raster(f'/home/spatialdays/Documents/testing-wofs/WOFLs/{scene_name}_WOFL.tif')
 
 
 
