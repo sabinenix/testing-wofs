@@ -19,6 +19,65 @@ import botocore
 import boto3
 
 
+# ORIGINAL FUNCTION:
+# def ls_unpack_qa(data_array, cover_type):
+#     """
+#     (Originally ls8_unpack_qa, ls7_unpack_qa, etc. from dc_mosaic.py)
+
+#     For l4, l5, l7, and l8, the pixel_qa band is a bit band where each bit 
+#     corresponds to some surface condition. The 6th bit corresponds to clear, 
+#     and the 7th bit corresponds to water. Note that a pixel will only be flagged
+#     as water if it is also not cloud, cloud shadow, etc.
+
+#     For l4-7, clear bit is a known issue and USGS recommends using bits 1 and 3.
+#     (https://www.usgs.gov/landsat-missions/landsat-collection-2-known-issues#SR)
+
+#     """
+#     boolean_mask = np.zeros(data_array.shape, dtype=bool)
+#     data_array = data_array.astype(np.int64)
+
+#     if cover_type == 'clear':
+#         # 6th bit is clear
+#         boolean_mask |=  ((data_array & 0b0000000001000000) != 0)
+#     elif cover_type == 'water':
+#         # 7th bit is water
+#         boolean_mask |= ((data_array & 0b0000000010000000) != 0)
+#     else:
+#         raise ValueError(f"Cover type {cover_type} not supported for Landsat 8 yet")
+#     return boolean_mask
+
+# def ls_unpack_qa(data_array, cover_type):
+#     """
+#     (Originally ls8_unpack_qa, ls7_unpack_qa, etc. from dc_mosaic.py)
+
+#     For l4, l5, l7, and l8, the pixel_qa band is a bit band where each bit 
+#     corresponds to some surface condition. The 6th bit corresponds to clear, 
+#     and the 7th bit corresponds to water. Note that a pixel will only be flagged
+#     as water if it is also not cloud, cloud shadow, etc.
+
+#     For l4-7, clear bit is a known issue and USGS recommends using bits 1 and 3.
+#     (https://www.usgs.gov/landsat-missions/landsat-collection-2-known-issues#SR)
+
+#     """
+#     boolean_mask = np.zeros(data_array.shape, dtype=bool)
+#     data_array = data_array.astype(np.int64)
+
+#     if cover_type == 'clear':
+#         # If dilated cloud (bit 1) and cloud (bit 3) are OFF, pixel is clear
+#         boolean_mask &= ((data_array & 0b0000000000000010) == 0)
+#         boolean_mask &= ((data_array & 0b0000000000001000) == 0)
+
+#         # Also, avoid considering snow/ice 'clear' (some clouds flagged as snow) 
+#         boolean_mask &= ((data_array & 0b0000000000100000) == 0)
+    
+#     elif cover_type == 'water':
+#         # 7th bit is water
+#         boolean_mask |= ((data_array & 0b0000000010000000) != 0)
+#     else:
+#         raise ValueError(f"Cover type {cover_type} not supported for Landsat 8 yet")
+#     return boolean_mask
+
+
 def ls_unpack_qa(data_array, cover_type):
     """
     (Originally ls8_unpack_qa, ls7_unpack_qa, etc. from dc_mosaic.py)
@@ -36,8 +95,13 @@ def ls_unpack_qa(data_array, cover_type):
     data_array = data_array.astype(np.int64)
 
     if cover_type == 'clear':
-        # 6th bit is clear
-        boolean_mask |=  ((data_array & 0b0000000001000000) != 0)
+        # If dilated cloud (bit 1), cloud (bit 3), and snow (bit 5) are OFF, pixel is clear
+        dilated_cloud_bit = 1 << 1
+        cloud_bit = 1 << 3
+        snow_bit = 1 << 5
+        clear_bit_mask = dilated_cloud_bit | cloud_bit | snow_bit
+        boolean_mask = np.invert((np.bitwise_and(data_array, clear_bit_mask) != 0))
+    
     elif cover_type == 'water':
         # 7th bit is water
         boolean_mask |= ((data_array & 0b0000000010000000) != 0)
@@ -240,7 +304,7 @@ def s3_create_client(s3_bucket):
     return s3_client, bucket
 
 
-def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='ard-bucket', s3_dir='', inter_dir='azure_test/', apply_masks=False, **kwargs):
+def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='ard-bucket', s3_dir='', inter_dir='', apply_masks=False, **kwargs):
     """
     Generate (and if desired, apply) water and clear masks for a given scene. 
     
@@ -255,7 +319,7 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='ard-bucket', s
     scene_name = os.path.dirname(optical_yaml_path).split('/')[-1]
     root.info(f"Starting scene: {scene_name}")
     
-    # Data to run the water mask on is stored in data_dir for now (should eventually pull from s3)
+    # Data to run the water mask on is stored in data_dir 
     data_dir = f"{inter_dir}{scene_name}/"
     os.makedirs(data_dir, exist_ok=True)
 
@@ -265,6 +329,7 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='ard-bucket', s
 
     #yml = optical_yaml_path
     yml = f'{data_dir}datacube-metadata.yaml'
+    logging.info(f'YML: {yml}')
 
     # Define the desired bands for each instrument
     des_band_refs = {
@@ -399,11 +464,11 @@ if __name__ == '__main__':
     root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
 
     # # Testing from azure
-    s3_bucket = 'ard-bucket'
-    optical_yaml_path = 'common_sensing/fiji/landsat_8/LC08_L2SR_075072_20150109/datacube-metadata.yaml'
-    #yml = 'test_download.yaml'
-    #optical_yaml_path = '/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/LC08_L2SR_075072_20221011_tmp/datacube-metadata.yaml'
-    gen_water_mask(optical_yaml_path, s3_source=True, inter_dir='azure_test/', apply_masks=False)
+    # s3_bucket = 'ard-bucket'
+    # optical_yaml_path = 'common_sensing/fiji/landsat_8/LC08_L2SR_075072_20150109/datacube-metadata.yaml'
+    # #yml = 'test_download.yaml'
+    # #optical_yaml_path = '/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/LC08_L2SR_075072_20221011_tmp/datacube-metadata.yaml'
+    # gen_water_mask(optical_yaml_path, s3_source=True, inter_dir='azure_test/', apply_masks=False)
 
 
     # # Sentinel 2
@@ -412,7 +477,7 @@ if __name__ == '__main__':
     
 
     # Landsat 8: Run for all scenes in the directory
-    # yaml_paths = glob.glob('/home/spatialdays/Documents/ARD_Data/ARD_Landsat/Tile7572/*/datacube-metadata.yaml')
-    # for optical_yaml_path in yaml_paths:
-    #     gen_water_mask(optical_yaml_path, s3_source=True, inter_dir='test_masking/Tile7572/')
+    yaml_paths = glob.glob('/home/spatialdays/Documents/testing-wofs/test_masking/BitEditing/*/datacube-metadata.yaml')
+    for optical_yaml_path in yaml_paths:
+        gen_water_mask(optical_yaml_path, s3_source=False, inter_dir='test_masking/BitEditing/')
     
