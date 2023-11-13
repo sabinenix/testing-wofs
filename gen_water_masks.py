@@ -15,6 +15,8 @@ import logging
 import os
 import glob
 from wofs_classify import wofs_classify
+import botocore
+import boto3
 
 
 def ls_unpack_qa(data_array, cover_type):
@@ -25,6 +27,10 @@ def ls_unpack_qa(data_array, cover_type):
     corresponds to some surface condition. The 6th bit corresponds to clear, 
     and the 7th bit corresponds to water. Note that a pixel will only be flagged
     as water if it is also not cloud, cloud shadow, etc.
+
+    For l4-7, clear bit is a known issue and USGS recommends using bits 1 and 3.
+    (https://www.usgs.gov/landsat-missions/landsat-collection-2-known-issues#SR)
+
     """
     boolean_mask = np.zeros(data_array.shape, dtype=bool)
     data_array = data_array.astype(np.int64)
@@ -67,6 +73,9 @@ def sen2_unpack_qa(data_array, cover_type):
     4: vegetation, 5: not_vegetated, 6: water, 7: unclassified, 8: cloud_medium_prob,
     9: cloud_high_prob, 10: thin_cirrus, 11: snow_ice
 
+    Clear masks include all pixels that are not nodata, saturated or defected, cloud shadows, 
+    clouds (medium and high prob), or thin cirrus.
+
     Documentation on these values: 
     https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-2-msi/level-2a/algorithm-overview
     """
@@ -82,7 +91,7 @@ def sen2_unpack_qa(data_array, cover_type):
                                 cloud_high_prob=[9],
                                 thin_cirrus=[10],
                                 snow_ice=[11],
-                                clear = [4,5,6,11],
+                                clear = [2,4,5,6,7,11],
                                 )
     return unpack_bits(land_cover_endcoding, data_array, cover_type)
 
@@ -154,13 +163,13 @@ def load_img(bands_data, band_nms, satellite, timestamp):
     # Pick the reference band and assign nodata value for each satellite
     if satellite == 'SENTINEL_2':
         ref_band = bands_data[6]
-        nodata = -9999
+        #nodata = -9999
     elif satellite.startswith('LANDSAT_'):
         ref_band = bands_data[0]
-        nodata = 0
+        #nodata = 0
 
     # Combine the bands into xarray dataset after matching them to the reference band and aligning
-    bands_data = [ bands_data[i].rio.reproject_match(ref_band, nodata = nodata) for i in range(len(band_nms)) ] 
+    bands_data = [ bands_data[i].rio.reproject_match(ref_band) for i in range(len(band_nms)) ] 
     bands_data = [ xr.align(bands_data[0], bands_data[i], join="override")[1] for i in range(len(band_nms)) ]
     
     # Add time dimension to the data - TODO: why are we adding and then dropping?
@@ -173,7 +182,65 @@ def load_img(bands_data, band_nms, satellite, timestamp):
 
     return bands_data
 
-def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='', s3_dir='common_sensing/fiji/wofsdefault/', inter_dir='test_masking/', aoi_mask=False, apply_masks=False, **kwargs):
+def s3_download(s3_bucket, s3_obj_path, dest_path):
+    """ - tested only for S3"""
+    client, bucket = s3_create_client(s3_bucket)
+    
+    try:
+        bucket.download_file(s3_obj_path, dest_path)
+    except botocore.exceptions.ClientError as e:
+        if e.response['Error']['Code'] == "404":
+            logging.info("The object does not exist.")
+            raise
+        else:
+            raise
+
+
+def s3_create_client(s3_bucket):
+    """
+    Create and set up a connection to S3
+    :param s3_bucket:
+    :return: the s3 client object.
+    """
+
+    access = os.getenv("AWS_ACCESS_KEY_ID", 'none')
+    secret = os.getenv("AWS_SECRET_ACCESS_KEY", 'none')
+
+    session = boto3.Session(
+        access,
+        secret,
+    )
+
+    endpoint_url = os.getenv("S3_ENDPOINT", 'http://localhost:30003')
+
+    if endpoint_url is not None:
+        logging.debug('Endpoint URL: {}'.format(endpoint_url))
+
+    if endpoint_url is not None:
+        s3 = session.resource('s3', endpoint_url=endpoint_url)
+    else:
+        s3 = session.resource('s3', region_name='eu-west-2')
+
+    bucket = s3.Bucket(s3_bucket)
+
+    if endpoint_url is not None:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=access,
+            aws_secret_access_key=secret,
+            endpoint_url=endpoint_url
+        )
+    else:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=access,
+            aws_secret_access_key=secret
+        )
+
+    return s3_client, bucket
+
+
+def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='ard-bucket', s3_dir='', inter_dir='azure_test/', apply_masks=False, **kwargs):
     """
     Generate (and if desired, apply) water and clear masks for a given scene. 
     
@@ -196,9 +263,8 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='', s3_dir='com
     masked_dir = f"{inter_dir}{scene_name}_masked/"
     os.makedirs(masked_dir, exist_ok=True)
 
-    yml = optical_yaml_path
-    #yml = f'{inter_dir}datacube-metadata.yaml'
-    #aoi = f'{inter_dir}mask_aoi.geojson'
+    #yml = optical_yaml_path
+    yml = f'{data_dir}datacube-metadata.yaml'
 
     # Define the desired bands for each instrument
     des_band_refs = {
@@ -209,38 +275,41 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='', s3_dir='com
         "SENTINEL_2": ['blue','green','red','nir','swir1','swir2','scene_classification'],
         "SENTINEL_1": ['VV','VH','somethinglayover shadow']}
 
-    # Download the data and yml
     try:
-        root.info(f"Downloading {scene_name}")
+        logging.info(f"Accessing data for {scene_name}")
 
-        # Note: haven't tested the following section (because s3_source=False)
+        # If the yaml file doesn't already exist locally, download the ARD data from Azure
         if (s3_source) & (not os.path.exists(yml)):
+            
+            # Download the yaml file for the scene and write to 'yml' location
             s3_download(s3_bucket, optical_yaml_path, yml)
+
+            # Open the yaml file and get the information on data to download
             with open (yml) as stream: yml_meta = yaml.safe_load(stream)
-            satellite = yml_meta['platform']['code'] # helper to generalise masking 
+            satellite = yml_meta['platform']['code'] 
             des_bands = des_band_refs[satellite]
-            print(satellite, des_bands)
+
+            # Define band paths on Azure and where to write to locally
             band_paths_s3 = [os.path.dirname(optical_yaml_path)+'/'+yml_meta['image']['bands'][b]['path'] for b in des_bands ]
-            band_paths_local = [inter_dir+os.path.basename(i) for i in band_paths_s3]
+            band_paths_local = [data_dir+os.path.basename(i) for i in band_paths_s3]
+
+            # Download the data for each band and write to 'data_dir' location
+            logging.info(f'Downloading data for {satellite} bands {des_bands}')
             for s3, loc in zip(band_paths_s3, band_paths_local): 
                 if not os.path.exists(loc):
                     s3_download(s3_bucket, s3, loc)
-        elif os.path.exists(yml):
-            with open (yml) as stream: yml_meta = yaml.safe_load(stream)
-            satellite = yml_meta['platform']['code'] # helper to generalise masking 
-            root.info(f'Satellite: {satellite}')
-            des_bands = des_band_refs[satellite]
-        else:
-            print('boo')
         
-        if aoi_mask:
-            #s3_download(s3_bucket, aoi_mask, aoi)
-            root.info(f"Using AOI mask")
-        else: 
-            aoi = False
-        root.info(f"Found and downloaded the yml and data")
+        # If the yaml already exists, skip downloading and just open the data 
+        elif os.path.exists(yml):
+            logging.info(f'Yaml already exists for {scene_name} - not re-downloading.')
+            with open (yml) as stream: yml_meta = yaml.safe_load(stream)
+            satellite = yml_meta['platform']['code'] 
+            logging.info(f'Satellite: {satellite}')
+            des_bands = des_band_refs[satellite]
+
+        logging.info(f"Found and downloaded the yml and data")
     except:
-        root.exception(f"{scene_name} Yaml or band files can't be found")
+        logging.exception(f"{scene_name} Yaml or band files can't be found")
         raise Exception('Download Error')
     
     try:
@@ -329,20 +398,21 @@ if __name__ == '__main__':
     root = logging.getLogger()
     root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
 
-    # # Landsat 8 
+    # # Testing from azure
+    s3_bucket = 'ard-bucket'
+    optical_yaml_path = 'common_sensing/fiji/landsat_8/LC08_L2SR_075072_20150109/datacube-metadata.yaml'
+    #yml = 'test_download.yaml'
     #optical_yaml_path = '/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/LC08_L2SR_075072_20221011_tmp/datacube-metadata.yaml'
-    #gen_water_mask(optical_yaml_path, inter_dir='test_masking/Tile7572/', apply_masks=False)
+    gen_water_mask(optical_yaml_path, s3_source=True, inter_dir='azure_test/', apply_masks=False)
 
 
     # # Sentinel 2
     #optical_yaml_path = '/home/spatialdays/Documents/testing-wofs/test_masking/S2A_MSIL2A_20190124T221941_T60KYF_scaled_tmp/datacube-metadata.yaml'
     #gen_water_mask(optical_yaml_path, inter_dir='test_masking/')
-
-    # Sentinel 2: Run for all scenes in the directory
     
 
     # Landsat 8: Run for all scenes in the directory
-    yaml_paths = glob.glob('/home/spatialdays/Documents/ARD_Data/ARD_Landsat/Tile7572/*/datacube-metadata.yaml')
-    for optical_yaml_path in yaml_paths:
-        gen_water_mask(optical_yaml_path, inter_dir='test_masking/Tile7572/')
+    # yaml_paths = glob.glob('/home/spatialdays/Documents/ARD_Data/ARD_Landsat/Tile7572/*/datacube-metadata.yaml')
+    # for optical_yaml_path in yaml_paths:
+    #     gen_water_mask(optical_yaml_path, s3_source=True, inter_dir='test_masking/Tile7572/')
     
