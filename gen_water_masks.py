@@ -19,7 +19,7 @@ import botocore
 import boto3
 
 
-# ORIGINAL FUNCTION:
+#ORIGINAL FUNCTION:
 # def ls_unpack_qa(data_array, cover_type):
 #     """
 #     (Originally ls8_unpack_qa, ls7_unpack_qa, etc. from dc_mosaic.py)
@@ -94,19 +94,27 @@ def ls_unpack_qa(data_array, cover_type):
     boolean_mask = np.zeros(data_array.shape, dtype=bool)
     data_array = data_array.astype(np.int64)
 
+    # Create a mask for nodata areas around edges of the image (value of 1 in pixel_qa band)
+    nodata_mask = data_array == 1
+
     if cover_type == 'clear':
         # If dilated cloud (bit 1), cloud (bit 3), and snow (bit 5) are OFF, pixel is clear
         dilated_cloud_bit = 1 << 1
         cloud_bit = 1 << 3
+        cloud_shadow_bit = 1 << 4
         snow_bit = 1 << 5
-        clear_bit_mask = dilated_cloud_bit | cloud_bit | snow_bit
-        boolean_mask = np.invert((np.bitwise_and(data_array, clear_bit_mask) != 0))
+        clear_bit_mask = dilated_cloud_bit | cloud_bit | cloud_shadow_bit | snow_bit
+        boolean_mask |= np.bitwise_and(data_array, clear_bit_mask) == 0
+
+        # Apply the nodata mask to force edges of image to have value of 0 
+        boolean_mask = boolean_mask & ~nodata_mask
     
     elif cover_type == 'water':
         # 7th bit is water
         boolean_mask |= ((data_array & 0b0000000010000000) != 0)
     else:
         raise ValueError(f"Cover type {cover_type} not supported for Landsat 8 yet")
+
     return boolean_mask
 
 def unpack_bits(land_cover_endcoding, data_array, cover_type):
@@ -227,10 +235,10 @@ def load_img(bands_data, band_nms, satellite, timestamp):
     # Pick the reference band and assign nodata value for each satellite
     if satellite == 'SENTINEL_2':
         ref_band = bands_data[6]
-        #nodata = -9999
+        nodata = -9999
     elif satellite.startswith('LANDSAT_'):
         ref_band = bands_data[0]
-        #nodata = 0
+        nodata = 0
 
     # Combine the bands into xarray dataset after matching them to the reference band and aligning
     bands_data = [ bands_data[i].rio.reproject_match(ref_band) for i in range(len(band_nms)) ] 
@@ -242,7 +250,13 @@ def load_img(bands_data, band_nms, satellite, timestamp):
     
     # Add attributes from the original reference band
     attrs = ref_band.attrs
+    logging.info(f'Attributes: {attrs}')
     bands_data = bands_data.assign_attrs(attrs)
+
+    # Add fill value attribute to -9999
+    bands_data.attrs['_FillValue'] = -9999
+
+    logging.info(f'BANDS DATA: {bands_data}')
 
     return bands_data
 
@@ -324,7 +338,7 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='ard-bucket', s
     os.makedirs(data_dir, exist_ok=True)
 
     # Directory to hold the water/cloud masks and masked imagery
-    masked_dir = f"{inter_dir}{scene_name}_masked/"
+    masked_dir = f"{inter_dir}{scene_name}_masked_v2/"
     os.makedirs(masked_dir, exist_ok=True)
 
     #yml = optical_yaml_path
@@ -464,11 +478,11 @@ if __name__ == '__main__':
     root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
 
     # # Testing from azure
-    # s3_bucket = 'ard-bucket'
-    # optical_yaml_path = 'common_sensing/fiji/landsat_8/LC08_L2SR_075072_20150109/datacube-metadata.yaml'
-    # #yml = 'test_download.yaml'
-    # #optical_yaml_path = '/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/LC08_L2SR_075072_20221011_tmp/datacube-metadata.yaml'
-    # gen_water_mask(optical_yaml_path, s3_source=True, inter_dir='azure_test/', apply_masks=False)
+    s3_bucket = 'ard-bucket'
+    optical_yaml_path = 'common_sensing/fiji/landsat_7/LE07_L2SR_070071_20050203/datacube-metadata.yaml'
+    #yml = 'test_download.yaml'
+    #optical_yaml_path = '/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/LC08_L2SR_075072_20221011_tmp/datacube-metadata.yaml'
+    gen_water_mask(optical_yaml_path, s3_source=True, inter_dir='azure_test2/', apply_masks=False)
 
 
     # # Sentinel 2
@@ -476,8 +490,9 @@ if __name__ == '__main__':
     #gen_water_mask(optical_yaml_path, inter_dir='test_masking/')
     
 
-    # Landsat 8: Run for all scenes in the directory
-    yaml_paths = glob.glob('/home/spatialdays/Documents/testing-wofs/test_masking/BitEditing/*/datacube-metadata.yaml')
-    for optical_yaml_path in yaml_paths:
-        gen_water_mask(optical_yaml_path, s3_source=False, inter_dir='test_masking/BitEditing/')
+    # Running locally for all scenes in a directory
+    # yaml_paths = glob.glob('/home/spatialdays/Documents/testing-wofs/azure_test2/*/datacube-metadata.yaml')
+    # logging.info(f'YAML PATHS: {yaml_paths}')
+    # for optical_yaml_path in yaml_paths:
+    #     gen_water_mask(optical_yaml_path, s3_source=False, inter_dir='azure_test2/')
     
