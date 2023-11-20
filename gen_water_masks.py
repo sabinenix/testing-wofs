@@ -327,8 +327,8 @@ def yaml_prep_wofs(scene_dir, original_yml):
     logging.info(f"Preparing scene {scene_name}")
     logging.info(f"Scene path {scene_dir}")
     
-    # find all cog prods
-    prod_paths = glob.glob(scene_dir + '*.tif')
+    # Select only the combined water + cloud mask 
+    prod_paths = glob.glob(scene_dir + '*combined_mask.tif')
     
     # date time assumed eqv for start and stop - this isn't true and could be 
     # pulled from .xml file (or scene dir) not done yet for sake of progression
@@ -339,14 +339,14 @@ def yaml_prep_wofs(scene_dir, original_yml):
     # Why is this only selecting the first band? 
     images = { 'water': { 'path': str(prod_paths[0].split('/')[-1]) } }
     
-    # What is the purpose of the id?
+    # Set the new ID for the water mask
     new_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{scene_name}_water"))
     
-    # What should the product type be? - water mask?
+    # Combine the yaml information and call the product 'water_mask' instead of wofs
     return {
         'id': new_id,
         'processing_level': original_yml['processing_level'],
-        'product_type': "wofs",
+        'product_type': "water_mask",
         'creation_dt': str(datetime.today().strftime('%Y-%m-%d %H:%M:%S')),
         'platform': {  
             'code': original_yml['platform']['code']
@@ -534,7 +534,7 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='ard-bucket', s
     # Generate YAMLS for the water masks 
     try: 
         logging.info(f'Generating YAML for {scene_name}')
-        create_yaml(masked_dir, yaml_prep_wofs(data_dir, yml_meta))
+        create_yaml(masked_dir, yaml_prep_wofs(masked_dir, yml_meta))
         logging.info(f'YAML generated for {scene_name}')
     except: 
         logging.info(f'YAML not generated for {scene_name}')
@@ -561,12 +561,10 @@ if __name__ == '__main__':
     root = logging.getLogger()
     root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
 
-    # # Testing from azure
-    # s3_bucket = 'ard-bucket'
-    # optical_yaml_path = 'common_sensing/fiji/landsat_4/LT04_L2SR_074073_19920603/datacube-metadata.yaml'
-    # #yml = 'test_download.yaml'
-    # #optical_yaml_path = '/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/LC08_L2SR_075072_20221011_tmp/datacube-metadata.yaml'
-    # gen_water_mask(optical_yaml_path, s3_source=True, inter_dir='azure_test2/', apply_masks=False)
+    # # Running on ARD data from azure
+    s3_bucket = 'ard-bucket'
+    optical_yaml_path = 'common_sensing/fiji/landsat_8/LC08_L2SR_075072_20221011/datacube-metadata.yaml'
+    gen_water_mask(optical_yaml_path, s3_source=True, inter_dir='test_masking/Tile7572/', apply_masks=False)
 
 
     # # Sentinel 2
@@ -575,8 +573,8 @@ if __name__ == '__main__':
     
 
     # Running locally for all scenes in a directory
-    yaml_paths = glob.glob('/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/*/datacube-metadata.yaml')
-    logging.info(f'YAML PATHS: {yaml_paths}')
-    for optical_yaml_path in yaml_paths:
-        gen_water_mask(optical_yaml_path, s3_source=False, inter_dir='test_masking/Tile7572/')
+    # yaml_paths = glob.glob('/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/*/datacube-metadata.yaml')
+    # logging.info(f'YAML PATHS: {yaml_paths}')
+    # for optical_yaml_path in yaml_paths:
+    #     gen_water_mask(optical_yaml_path, s3_source=False, inter_dir='test_masking/Tile7572/')
     
