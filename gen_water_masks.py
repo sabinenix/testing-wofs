@@ -1,16 +1,10 @@
-import gc
 import numpy as np
 import xarray as xr
-import matplotlib.pyplot as plt
-import matplotlib as mpl
 import rioxarray as rxr
-from rioxarray.merge import merge_arrays
-from rioxarray.merge import merge_datasets
 from osgeo import gdal
 from xarray.ufuncs import logical_or  as xr_or
 import yaml
 from datetime import datetime
-import rasterio 
 import logging
 import os
 import glob
@@ -19,64 +13,6 @@ import botocore
 import boto3
 from dateutil.parser import parse
 import uuid
-
-#ORIGINAL FUNCTION:
-# def ls_unpack_qa(data_array, cover_type):
-#     """
-#     (Originally ls8_unpack_qa, ls7_unpack_qa, etc. from dc_mosaic.py)
-
-#     For l4, l5, l7, and l8, the pixel_qa band is a bit band where each bit 
-#     corresponds to some surface condition. The 6th bit corresponds to clear, 
-#     and the 7th bit corresponds to water. Note that a pixel will only be flagged
-#     as water if it is also not cloud, cloud shadow, etc.
-
-#     For l4-7, clear bit is a known issue and USGS recommends using bits 1 and 3.
-#     (https://www.usgs.gov/landsat-missions/landsat-collection-2-known-issues#SR)
-
-#     """
-#     boolean_mask = np.zeros(data_array.shape, dtype=bool)
-#     data_array = data_array.astype(np.int64)
-
-#     if cover_type == 'clear':
-#         # 6th bit is clear
-#         boolean_mask |=  ((data_array & 0b0000000001000000) != 0)
-#     elif cover_type == 'water':
-#         # 7th bit is water
-#         boolean_mask |= ((data_array & 0b0000000010000000) != 0)
-#     else:
-#         raise ValueError(f"Cover type {cover_type} not supported for Landsat 8 yet")
-#     return boolean_mask
-
-# def ls_unpack_qa(data_array, cover_type):
-#     """
-#     (Originally ls8_unpack_qa, ls7_unpack_qa, etc. from dc_mosaic.py)
-
-#     For l4, l5, l7, and l8, the pixel_qa band is a bit band where each bit 
-#     corresponds to some surface condition. The 6th bit corresponds to clear, 
-#     and the 7th bit corresponds to water. Note that a pixel will only be flagged
-#     as water if it is also not cloud, cloud shadow, etc.
-
-#     For l4-7, clear bit is a known issue and USGS recommends using bits 1 and 3.
-#     (https://www.usgs.gov/landsat-missions/landsat-collection-2-known-issues#SR)
-
-#     """
-#     boolean_mask = np.zeros(data_array.shape, dtype=bool)
-#     data_array = data_array.astype(np.int64)
-
-#     if cover_type == 'clear':
-#         # If dilated cloud (bit 1) and cloud (bit 3) are OFF, pixel is clear
-#         boolean_mask &= ((data_array & 0b0000000000000010) == 0)
-#         boolean_mask &= ((data_array & 0b0000000000001000) == 0)
-
-#         # Also, avoid considering snow/ice 'clear' (some clouds flagged as snow) 
-#         boolean_mask &= ((data_array & 0b0000000000100000) == 0)
-    
-#     elif cover_type == 'water':
-#         # 7th bit is water
-#         boolean_mask |= ((data_array & 0b0000000010000000) != 0)
-#     else:
-#         raise ValueError(f"Cover type {cover_type} not supported for Landsat 8 yet")
-#     return boolean_mask
 
 
 def ls_unpack_qa(data_array, cover_type):
@@ -91,6 +27,13 @@ def ls_unpack_qa(data_array, cover_type):
     For l4-7, clear bit is a known issue and USGS recommends using bits 1 and 3.
     (https://www.usgs.gov/landsat-missions/landsat-collection-2-known-issues#SR)
 
+    Parameters: 
+    data_array - xarray DataArray of the scene's pixel_qa band
+    cover_type - string of the cover type to return mask for (optiosn are 'clear' or 'water')
+
+    Returns: 
+    boolean_mask - xarray DataArray with a boolean mask for the cover type (True where pixels
+    are clear or water, and False where not clear or not water, depending on the mask type)
     """
     boolean_mask = np.zeros(data_array.shape, dtype=bool)
     data_array = data_array.astype(np.int64)
@@ -99,7 +42,7 @@ def ls_unpack_qa(data_array, cover_type):
     nodata_mask = data_array == 1
 
     if cover_type == 'clear':
-        # If dilated cloud (bit 1), cloud (bit 3), and snow (bit 5) are OFF, pixel is clear
+        # If dilated cloud (1), cloud (3), cloud shadow (4) and snow (5) bits are OFF, pixel is clear
         dilated_cloud_bit = 1 << 1
         cloud_bit = 1 << 3
         cloud_shadow_bit = 1 << 4
@@ -120,6 +63,7 @@ def ls_unpack_qa(data_array, cover_type):
 
 def unpack_bits(land_cover_endcoding, data_array, cover_type):
     """
+    (From dc_mosaic.py)
 	Description:
 		Unpack bits for the sen2_unpack_qa function.
 	-----
@@ -151,6 +95,14 @@ def sen2_unpack_qa(data_array, cover_type):
 
     Documentation on these values: 
     https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-2-msi/level-2a/algorithm-overview
+    
+    Parameters:
+    data_array - xarray DataArray of the scene's scene_classification band
+    cover_type - string of the cover type to return mask for (options are 'clear' or 'water')
+
+    Returns:
+    boolean_mask - xarray DataArray with a boolean mask for the cover type (True where pixels
+    are clear or water, and False where not clear or not water, depending on the mask type)
     """
     land_cover_endcoding = dict(fill=[0],
                                 invalid=[1],
@@ -174,14 +126,14 @@ def qa_clean_mask(pixel_qa_band, platform, cover_types):
     (Originally from dc_mosaic.py)
 
     Parameters:
-    pixel_qa_band: xarray DataArray of either the pixel_qa band for Landsat or
+    pixel_qa_band - xarray DataArray of either the pixel_qa band for Landsat or
     the scene classification band for Sentinel-2
-    platform: string denoting the platform (e.g. LANDSAT_8, SENTINEL_2)
-    cover_types: list of strings denoting the cover types to return mask for - 
+    platform - string denoting the platform (e.g. LANDSAT_8, SENTINEL_2)
+    cover_types - list of strings denoting the cover types to return mask for - 
     current options are only 'clear' or 'water'
 
     Returns: 
-    clean_mask: xarray DataArray with a boolean mask for the cover type
+    clean_mask - xarray DataArray with a boolean mask for the cover type
     """
     processing_options = {
         "LANDSAT_4": ls_unpack_qa,
@@ -212,9 +164,9 @@ def rename_bands(in_xr, des_bands, position):
     in_xr.name = des_bands[position]
     return in_xr
 
-def load_img(bands_data, band_nms, satellite, timestamp):
+def load_img(bands_data, band_nms, satellite):
     """
-    (From genprepWater.py)
+    (Originally from genprepWater.py)
 
     Use one of the bands as a reference for reprojection and resampling (matching the resolution of
     the reference band), then align all bands before merging into a single xarray dataset. 
@@ -225,39 +177,37 @@ def load_img(bands_data, band_nms, satellite, timestamp):
     the reference band. 
 
     Parameters:
-    bands_data: list of xarray DataArrays for each band
-    band_nms: list of strings of the band names
-    satellite: string denoting the satellite (e.g. LANDSAT_8, SENTINEL_2)
-    nodata: int denoting the nodata value to use for the bands (0 for Landsat Collection 2)
+    bands_data - list of xarray DataArrays for each band
+    band_nms- list of strings of the band names
+    satellite -  string denoting the satellite (e.g. LANDSAT_8, SENTINEL_2)
+
+    Returns:
+    bands_data - xarray dataset containing all bands
     """
     # Name the bands so they appear as named data variables in the xarray dataset
     bands_data = [ rename_bands(band_data, band_nms, i) for i,band_data in enumerate(bands_data) ] 
    
-    # Pick the reference band and assign nodata value for each satellite
+    # Pick the reference band for each satellite
     if satellite == 'SENTINEL_2':
         ref_band = bands_data[6]
-        nodata = -9999
     elif satellite.startswith('LANDSAT_'):
         ref_band = bands_data[0]
-        nodata = 0
 
     # Combine the bands into xarray dataset after matching them to the reference band and aligning
     bands_data = [ bands_data[i].rio.reproject_match(ref_band) for i in range(len(band_nms)) ] 
     bands_data = [ xr.align(bands_data[0], bands_data[i], join="override")[1] for i in range(len(band_nms)) ]
     
-    # Add time dimension to the data - TODO: why are we adding and then dropping?
-    for i in bands_data: i['time_drop'] = timestamp 
-    bands_data = xr.merge(bands_data).rename({'band':'time'}).drop('time_drop')
+    # Rename band to 'time' because wofs expects a time dimension (even though it's not a proper timestamp)
+    bands_data = xr.merge(bands_data).rename({'band':'time'})
     
     # Add attributes from the original reference band
     attrs = ref_band.attrs
-    logging.info(f'Attributes: {attrs}')
     bands_data = bands_data.assign_attrs(attrs)
 
     # Add fill value attribute to -9999
     bands_data.attrs['_FillValue'] = -9999
 
-    logging.info(f'BANDS DATA: {bands_data}')
+    logging.info(f'Combined and stacked band data: {bands_data}')
 
     return bands_data
 
@@ -321,23 +271,24 @@ def s3_create_client(s3_bucket):
 def yaml_prep_wofs(scene_dir, original_yml):
     """
     (From genprepWater.py)
-    Prepare individual wofs directory containing L8/S2/S1 cog water products.
+    Generate a yaml for the water mask. Most of the yaml information is copied
+    directly from the original scene's yaml, but the path to the product and the 
+    product name are changed to refer to the water mask. 
     """
     scene_name = scene_dir.split('/')[-2]
     logging.info(f"Preparing scene {scene_name}")
     logging.info(f"Scene path {scene_dir}")
     
-    # Select only the combined water + cloud mask 
-    prod_paths = glob.glob(scene_dir + '*combined_mask.tif')
-    
     # date time assumed eqv for start and stop - this isn't true and could be 
     # pulled from .xml file (or scene dir) not done yet for sake of progression
     t0=parse(str(datetime.strptime(original_yml['extent']['center_dt'], '%Y-%m-%d %H:%M:%S')))
-    # print ( t0 )
     t1=t0
 
-    # Why is this only selecting the first band? 
-    images = { 'water': { 'path': str(prod_paths[0].split('/')[-1]) } }
+    # Select the water mask to create the yaml for (the combined water + cloud mask)
+    mask_path = glob.glob(scene_dir + '*combined_mask.tif')
+
+    # Set the image path to the water mask
+    images = { 'water': { 'path': str(mask_path[0].split('/')[-1]) } }
     
     # Set the new ID for the water mask
     new_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{scene_name}_water"))
@@ -418,9 +369,8 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='ard-bucket', s
     masked_dir = f"{inter_dir}{scene_name}_masked_v2/"
     os.makedirs(masked_dir, exist_ok=True)
 
-    #yml = optical_yaml_path
+    # Path where the yaml file should be downloaded
     yml = f'{data_dir}datacube-metadata.yaml'
-    logging.info(f'YML: {yml}')
 
     # Define the desired bands for each instrument
     des_band_refs = {
@@ -432,8 +382,6 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='ard-bucket', s
         "SENTINEL_1": ['VV','VH','somethinglayover shadow']}
 
     try:
-        logging.info(f"Accessing data for {scene_name}")
-
         # If the yaml file doesn't already exist locally, download the ARD data from Azure
         if (s3_source) & (not os.path.exists(yml)):
             
@@ -445,12 +393,13 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='ard-bucket', s
             satellite = yml_meta['platform']['code'] 
             des_bands = des_band_refs[satellite]
 
+            logging.info(f'Starting to download data for {satellite} bands {des_bands}')
+
             # Define band paths on Azure and where to write to locally
             band_paths_s3 = [os.path.dirname(optical_yaml_path)+'/'+yml_meta['image']['bands'][b]['path'] for b in des_bands ]
             band_paths_local = [data_dir+os.path.basename(i) for i in band_paths_s3]
 
             # Download the data for each band and write to 'data_dir' location
-            logging.info(f'Downloading data for {satellite} bands {des_bands}')
             for s3, loc in zip(band_paths_s3, band_paths_local): 
                 if not os.path.exists(loc):
                     s3_download(s3_bucket, s3, loc)
@@ -463,23 +412,20 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='ard-bucket', s
             logging.info(f'Satellite: {satellite}')
             des_bands = des_band_refs[satellite]
 
-        logging.info(f"Found and downloaded the yml and data")
+        logging.info(f"Found or downloaded the yml and data")
     except:
         logging.exception(f"{scene_name} Yaml or band files can't be found")
         raise Exception('Download Error')
     
     try:
-        root.info(f"{scene_name} Loading & Reformatting bands")
-
-        # Get the timestamp for the scene from the yaml file
-        timestamp = datetime.strptime(yml_meta['extent']['center_dt'], '%Y-%m-%d %H:%M:%S')
+        root.info(f"Loading & Reformatting bands for {scene_name}")
 
         # Open each band and get the satellite information from the yaml file
         o_bands_data = [ rxr.open_rasterio(data_dir + yml_meta['image']['bands'][b]['path']) for b in des_bands ] 
         satellite = yml_meta['platform']['code'] 
         
         # Use the load_img function to resample, reproject, align and merge bands into single dataset
-        bands_data = load_img(o_bands_data, des_bands, satellite, timestamp)
+        bands_data = load_img(o_bands_data, des_bands, satellite)
 
         # Select the band from which to generate masks
         if satellite == 'SENTINEL_2':
@@ -489,14 +435,15 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='ard-bucket', s
 
         for i in o_bands_data: i.close()
 
-        root.info(f"{scene_name} Loaded & Reformatted bands")
+        root.info(f"=Loaded & Reformatted bands")
 
     except:
         root.exception(f"{scene_name} Band data not loaded properly")
         raise Exception('Data formatting error')
     
+    # Generate clear and water masks from the pixel_qa or scene_classification bands
     try:
-        root.info(f"{scene_name} Generating masks using classification bands")
+        root.info(f"Generating masks using classification bands for {scene_name} ")
         
         # Generate the water mask
         water_mask = qa_clean_mask(pixel_qa_band, satellite, cover_types=['water']) 
@@ -509,7 +456,6 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='ard-bucket', s
         # Combine the clear and water masks (nodata = -9999, non-water = 0, water = 1)
         combined_mask = water_mask.where(clear_mask)
         combined_mask = combined_mask.fillna(-9999)
-        logging.info(f'Min and Max of combined mask: {combined_mask.min()}, {combined_mask.max()}')
         combined_mask.rio.to_raster(f"{masked_dir}/{scene_name}_combined_mask.tif", nodata=-9999, dtype="int16", driver='COG')
 
         root.info(f"Got the masks for {satellite}")
@@ -521,10 +467,9 @@ def gen_water_mask(optical_yaml_path, s3_source=False, s3_bucket='ard-bucket', s
     
     # Generate water masks using wofs algorithm
     try: 
-        root.info(f"{scene_name} Generating masks using WOFS algorithm")
+        root.info(f"Generating masks using WOFS algorithm for {scene_name}")
         wofl = wofs_classify(bands_data, clean_mask=clear_mask, x_coord='x', y_coord='y',
                   time_coord='time', no_data=-9999)
-        logging.info(f'Min and Max of WOFL: {wofl.wofs.min()}, {wofl.wofs.max()}')
         wofl.wofs.rio.to_raster(f"{masked_dir}/{scene_name}_wofl_mask.tif", nodata=-9999, dtype="int16", driver='COG')
         root.info(f"Got the WOFL masks for {satellite}")
     except:
@@ -561,16 +506,12 @@ if __name__ == '__main__':
     root = logging.getLogger()
     root.setLevel(os.environ.get("LOGLEVEL", "INFO"))
 
-    # # Running on ARD data from azure
+    # Running on ARD data from azure (change the optical_yaml_path to the scene you want to run)
     s3_bucket = 'ard-bucket'
-    optical_yaml_path = 'common_sensing/fiji/landsat_8/LC08_L2SR_075072_20221011/datacube-metadata.yaml'
+    optical_yaml_path = 'common_sensing/fiji/landsat_8/LC08_L2SR_075072_20180829/datacube-metadata.yaml'
     gen_water_mask(optical_yaml_path, s3_source=True, inter_dir='test_masking/Tile7572/', apply_masks=False)
-
-
-    # # Sentinel 2
-    #optical_yaml_path = '/home/spatialdays/Documents/testing-wofs/test_masking/S2A_MSIL2A_20190124T221941_T60KYF_scaled_tmp/datacube-metadata.yaml'
-    #gen_water_mask(optical_yaml_path, inter_dir='test_masking/')
     
+
 
     # Running locally for all scenes in a directory
     # yaml_paths = glob.glob('/home/spatialdays/Documents/testing-wofs/test_masking/Tile7572/*/datacube-metadata.yaml')
